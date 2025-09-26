@@ -1,3 +1,4 @@
+// src/vehiculos/services/vehiculos.service.ts
 import {
   BadRequestException,
   ConflictException,
@@ -5,116 +6,101 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike, FindOptionsWhere } from 'typeorm';
-import { Vehiculo, EstadoVehiculo } from '../entities/vehiculo.entity';
+import { Repository } from 'typeorm';
+import { Vehiculo } from '../entities/vehiculo.entity';
 import { CreateVehiculoDto } from '../dto/create-vehiculo.dto';
 import { UpdateVehiculoDto } from '../dto/update-vehiculo.dto';
-
-export type ListVehiculosQuery = {
-  q?: string; // búsqueda por placa
-  estado?: EstadoVehiculo; // filtro por estado (enum tipado)
-  page?: number; // página (1..n)
-  limit?: number; // tamaño de página
-};
 
 @Injectable()
 export class VehiculosService {
   constructor(
     @InjectRepository(Vehiculo)
-    private readonly vehiculosRepo: Repository<Vehiculo>,
+    private readonly vehiculosRepository: Repository<Vehiculo>,
   ) {}
 
-  async findAll(params: ListVehiculosQuery = {}): Promise<{
-    total: number;
-    page: number;
-    limit: number;
-    items: Vehiculo[];
-  }> {
-    const page = params.page ?? 1;
-    const limit = params.limit ?? 20;
-
-    const where: FindOptionsWhere<Vehiculo> = {
-      ...(params.q ? { placa: ILike(`%${params.q}%`) } : {}),
-      ...(params.estado ? { estado: params.estado } : {}),
-    };
-
-    const [items, total] = await this.vehiculosRepo.findAndCount({
-      where,
+  // Lista todos (ordenados por más recientes primero)
+  async findAll(): Promise<Vehiculo[]> {
+    const vehiculos = await this.vehiculosRepository.find({
       order: { creadoEn: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
     });
-
-    return { total, page, limit, items };
-  }
-  async getById(id: string) {
-    return this.findOneOrThrow(id);
+    return vehiculos;
+    // Sirve si luego quieres hacer algo más con la lista
   }
 
-  async create(payload: CreateVehiculoDto) {
+  // Obtiene un vehículo por id (UUID)
+  async getById(id: string): Promise<Vehiculo> {
+    const vehiculo = await this.findOne(id);
+    return vehiculo;
+  }
+
+  // Crea un vehículo (valida placa única)
+  async create(body: CreateVehiculoDto): Promise<Vehiculo> {
     try {
-      const duplicated = await this.vehiculosRepo.findOne({
-        where: { placa: payload.placa },
+      // Unicidad de placa
+      const dup = await this.vehiculosRepository.findOne({
+        where: { placa: body.placa },
       });
-      if (duplicated) {
-        throw new ConflictException('La placa ya existe');
-      }
+      if (dup) throw new ConflictException('La placa ya existe');
 
-      const entity = this.vehiculosRepo.create(payload);
-      const saved = await this.vehiculosRepo.save(entity);
-      // devolvemos el registro actualizado desde DB
-      return this.findOneOrThrow(saved.id);
+      const nuevo = this.vehiculosRepository.create(body);
+      const guardado = await this.vehiculosRepository.save(nuevo);
+      // devolvemos desde DB por si hay defaults/transformaciones
+      return this.findOne(guardado.id);
     } catch (err) {
-      // Si ya es una excepción conocida, la repropagamos
       if (err instanceof ConflictException) throw err;
-      throw new BadRequestException('Error creando el vehículo');
+      throw new BadRequestException('Error creando vehículo');
     }
   }
 
-  async update(id: string, changes: UpdateVehiculoDto) {
+  // Elimina un vehículo por id
+  async delete(id: string): Promise<{ message: string }> {
     try {
-      const current = await this.findOneOrThrow(id);
+      await this.vehiculosRepository.delete(id);
+      return { message: 'Vehículo eliminado' };
+    } catch {
+      throw new BadRequestException('Error eliminando vehículo');
+    }
+  }
 
-      // Validar cambio de placa
-      if (changes.placa !== current.placa) {
-        const duplicated = await this.vehiculosRepo.findOne({
+  // Actualiza un vehículo (valida cambio de placa si aplica)
+  async update(id: string, changes: UpdateVehiculoDto): Promise<Vehiculo> {
+    try {
+      const current = await this.findOne(id);
+
+      if (changes.placa && changes.placa !== current.placa) {
+        const dup = await this.vehiculosRepository.findOne({
           where: { placa: changes.placa },
         });
-        if (duplicated) {
-          throw new ConflictException('La placa ya existe');
-        }
+        if (dup) throw new ConflictException('La placa ya existe');
       }
 
-      const merged = this.vehiculosRepo.merge(current, changes);
-      const saved = await this.vehiculosRepo.save(merged);
-      return saved;
+      const actualizado = this.vehiculosRepository.merge(current, changes);
+      const guardado = await this.vehiculosRepository.save(actualizado);
+      return guardado;
     } catch (err) {
-      if (err instanceof NotFoundException || err instanceof ConflictException)
+      if (err instanceof ConflictException || err instanceof NotFoundException)
         throw err;
-      throw new BadRequestException('Error actualizando el vehículo');
+      throw new BadRequestException('Error actualizando vehículo');
     }
   }
 
-  async delete(id: string) {
-    try {
-      const current = await this.findOneOrThrow(id);
-      await this.vehiculosRepo.remove(current);
-      return { message: 'Vehículo eliminado', id };
-    } catch (err) {
-      if (err instanceof NotFoundException) throw err;
-      throw new BadRequestException('Error eliminando el vehículo');
-    }
-  }
-
-  async findByPlaca(placa: string) {
-    return this.vehiculosRepo.findOne({ where: { placa } });
-  }
-
-  private async findOneOrThrow(id: string) {
-    const vehiculo = await this.vehiculosRepo.findOne({ where: { id } });
+  /* Debe ser async porque consulta la base y retorna una promesa */
+  private async findOne(id: string): Promise<Vehiculo> {
+    const vehiculo = await this.vehiculosRepository.findOne({
+      where: { id },
+      // relations: [] // agrega relaciones aquí cuando existan
+    });
     if (!vehiculo) {
       throw new NotFoundException(`Vehículo con id ${id} no encontrado`);
     }
+    return vehiculo;
+  }
+
+  // Utilidad para validaciones/integraciones
+  async findByPlaca(placa: string): Promise<Vehiculo | null> {
+    const vehiculo = await this.vehiculosRepository.findOne({
+      where: { placa },
+    });
     return vehiculo;
   }
 }
